@@ -90,11 +90,16 @@ def webhook():
     messages.append({"role": "user", "content": text})
 
     try:
-        resp = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            max_tokens=400,
-            temperature=0.9
+        response = client.chat.completions.create(
+    model="gpt-3.5-turbo",
+    messages=[
+        {"role": "system", "content": "Ты София, милая девушка, которая немного флиртует."},
+        {"role": "user", "content": user_message},
+    ]
+)
+
+reply = response.choices[0].message.content
+
         )
         answer = resp.choices[0].message.content.strip()
     except Exception as e:
