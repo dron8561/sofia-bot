@@ -1,14 +1,13 @@
 import os
-import sqlite3
 import time
+import threading
+import sqlite3
 from flask import Flask, request, jsonify
 import requests
 from openai import OpenAI
-import os
 from bad_words import BAD_WORDS
 
 # === Конфигурация ===
-# ВАЖНО: не сохраняй ключи в коде. Установи их как переменные окружения на хостинге (Render).
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 BOT_NAME = "София"
@@ -18,41 +17,67 @@ if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
     raise RuntimeError("⚠️ Не установлены TELEGRAM_TOKEN и OPENAI_API_KEY. Установи переменные окружения.")
 
 tg_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # === Flask ===
 app = Flask(__name__)
 
-# === SQLite база памяти ===
+# === SQLite база памяти с потокобезопасностью ===
 DB_PATH = "memory.db"
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cur = conn.cursor()
-cur.execute("""
-CREATE TABLE IF NOT EXISTS chats (
-    user_id INTEGER,
-    role TEXT,
-    content TEXT,
-    ts INTEGER
-)
-""")
-conn.commit()
+db_lock = threading.Lock()
+
+def init_db():
+    with db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS chats (
+            user_id INTEGER,
+            role TEXT,
+            content TEXT,
+            ts INTEGER
+        )
+        """)
+        conn.commit()
+        conn.close()
+
+init_db()
 
 def append_memory(user_id: int, role: str, content: str):
-    cur.execute("INSERT INTO chats (user_id, role, content, ts) VALUES (?, ?, ?, ?)",
-                (user_id, role, content, int(time.time())))
-    conn.commit()
-    # сохраняем последние 20 сообщений
-    cur.execute("DELETE FROM chats WHERE rowid IN (SELECT rowid FROM chats WHERE user_id=? ORDER BY ts DESC LIMIT -1 OFFSET 20)", (user_id,))
-    conn.commit()
+    with db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO chats (user_id, role, content, ts) VALUES (?, ?, ?, ?)",
+            (user_id, role, content, int(time.time()))
+        )
+        # оставляем только последние 20 сообщений
+        cur.execute(
+            "DELETE FROM chats WHERE rowid IN "
+            "(SELECT rowid FROM chats WHERE user_id=? ORDER BY ts DESC LIMIT -1 OFFSET 20)",
+            (user_id,)
+        )
+        conn.commit()
+        conn.close()
 
 def get_history(user_id: int):
-    cur.execute("SELECT role, content FROM chats WHERE user_id=? ORDER BY ts ASC", (user_id,))
-    rows = cur.fetchall()
+    with db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT role, content FROM chats WHERE user_id=? ORDER BY ts ASC", (user_id,))
+        rows = cur.fetchall()
+        conn.close()
     return [{"role": r[0], "content": r[1]} for r in rows]
 
+# === Отправка сообщений в Telegram с обработкой ошибок ===
 def telegram_send(chat_id: int, text: str):
     url = f"{tg_api}/sendMessage"
-    requests.post(url, json={"chat_id": chat_id, "text": text})
+    try:
+        response = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=5)
+        if response.status_code != 200:
+            print(f"Ошибка Telegram API: {response.status_code}, {response.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"Ошибка при отправке сообщения в Telegram: {e}")
 
 # === Личность Софии ===
 SYSTEM_PROMPT = (
@@ -86,22 +111,15 @@ def webhook():
 
     append_memory(user_id, "user", text)
     history = get_history(user_id)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
-    messages.append({"role": "user", "content": text})
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": text}]
 
     try:
         response = client.chat.completions.create(
-    model="gpt-3.5-turbo",
-    messages=[
-        {"role": "system", "content": "Ты София, милая девушка, которая немного флиртует."},
-        {"role": "user", "content": user_message},
-    ]
-)
-
-reply = response.choices[0].message.content
-
+            model="gpt-3.5-turbo",
+            messages=messages
         )
-        answer = resp.choices[0].message.content.strip()
+        answer = response.choices[0].message.content.strip()
     except Exception as e:
         print("Ошибка OpenAI:", e)
         answer = "Кажется, я чуть задумалась 😅 попробуй повторить позже."
