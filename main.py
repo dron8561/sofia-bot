@@ -4,6 +4,7 @@ import time
 from flask import Flask, request, jsonify
 import requests
 from openai import OpenAI
+import os
 from bad_words import BAD_WORDS
 
 # === Конфигурация ===
@@ -17,7 +18,7 @@ if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
     raise RuntimeError("⚠️ Не установлены TELEGRAM_TOKEN и OPENAI_API_KEY. Установи переменные окружения.")
 
 tg_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-openai = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # === Flask ===
 app = Flask(__name__)
