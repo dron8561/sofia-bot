@@ -4,7 +4,7 @@ import threading
 import sqlite3
 from flask import Flask, request, jsonify
 import requests
-from openai import OpenAI
+import openai
 from bad_words import BAD_WORDS
 
 # === Конфигурация ===
@@ -17,7 +17,7 @@ if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
     raise RuntimeError("⚠️ Не установлены TELEGRAM_TOKEN и OPENAI_API_KEY. Установи переменные окружения.")
 
 tg_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-client = OpenAI(api_key=OPENAI_API_KEY)
+openai.api_key = OPENAI_API_KEY
 
 # === Flask ===
 app = Flask(__name__)
@@ -115,11 +115,11 @@ def webhook():
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": text}]
 
     try:
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=messages
         )
-        answer = response.choices[0].message.content.strip()
+        answer = response.choices[0].message["content"].strip()
     except Exception as e:
         print("Ошибка OpenAI:", e)
         answer = "Кажется, я чуть задумалась 😅 попробуй повторить позже."
@@ -128,6 +128,7 @@ def webhook():
     telegram_send(chat_id, answer)
     return jsonify({"ok": True})
 
+# === Проверка статуса ===
 @app.route("/", methods=["GET"])
 def home():
     return f"{BOT_NAME} активна 🌸"
